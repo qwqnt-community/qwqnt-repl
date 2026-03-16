@@ -49,9 +49,9 @@ let previewGeneration = 0;      // monotonic counter to discard stale previews
 let hasCreatedPreviewLine = false; // track if we've added a \n for the current input
 
 /**
- * Heuristic: skip preview-eval for code that would mutate state.
- * We can't use V8's throwOnSideEffect, so we conservatively reject
- * declarations, assignments, delete, and increment/decrement.
+ * Heuristic: skip preview-eval for code that would mutate state or have side-effects.
+ * We conservatively reject declarations, assignments, delete, increment/decrement,
+ * and any potential calls or indexing via () and [].
  */
 function isSafeForPreview(code) {
     if (/^\s*(var|let|const|function|class|import|export)\b/.test(code)) return false;
@@ -148,52 +148,54 @@ function showCompletionPreview(r, suffix) {
 }
 
 // ─── Combined clear ───
+// Removes both the ghost-text completion and the evaluation result below.
 function clearAllPreviews(r) {
     clearInputPreview(r);
     clearCompletionPreview(r);
 }
 
 // ─── Request both previews (fired after each keypress) ───
+// Synchronizes completion ghost-text and value preview.
 function requestPreviews(r) {
     if (r.cursor !== r.line.length || r.line.trim() === '') return;
 
     const gen = ++previewGeneration;
     const line = r.line;
-    const trimmedLine = line.trim();
 
-    // 1) Completion preview (gray suffix)
+    // 1) Fetch Completion first to determine the text to be evaluated.
     sendRequest('complete', line).then(({ content }) => {
         if (gen !== previewGeneration || r.line !== line) return;
         const [completions, completeOn] = content;
-        if (!completions || completions.length === 0 || !completeOn) return;
 
-        const filtered = completions.filter(Boolean);
-        if (filtered.length > 0) {
-            const firstSuggestion = filtered[0];
-            if (firstSuggestion.length > completeOn.length) {
-                const suffix = firstSuggestion.slice(completeOn.length);
-                showCompletionPreview(r, suffix);
+        let suffix = '';
+        if (completions && completions.length > 0 && completeOn) {
+            const filtered = completions.filter(Boolean);
+            if (filtered.length > 0) {
+                const firstSuggestion = filtered[0];
+                if (firstSuggestion.length > completeOn.length) {
+                    suffix = firstSuggestion.slice(completeOn.length);
+                    showCompletionPreview(r, suffix);
+                }
             }
         }
+
+        // 2) Evaluation preview (eval either current line or completed line)
+        const codeToEval = (line + suffix).trim();
+        if (isSafeForPreview(codeToEval)) {
+            sendRequest('eval', { isReal: false, code: codeToEval }).then(({ content: result, isError }) => {
+                if (gen !== previewGeneration || r.line !== line) return;
+                if (isError || !result) return;
+
+                // Limit to one line, max 250 chars
+                let displayResult = result.split('\n')[0];
+                if (displayResult.length > 250) displayResult = displayResult.slice(0, 247) + '...';
+                // Don't show 'undefined'
+                if (displayResult === 'undefined') return;
+
+                showInputPreview(r, displayResult);
+            }).catch(() => { });
+        }
     }).catch(() => { });
-
-    // 2) Input preview (eval result below)
-    if (isSafeForPreview(trimmedLine)) {
-        sendRequest('eval', { isReal: false, code: trimmedLine }).then(({ content: result, isError }) => {
-            if (gen !== previewGeneration || r.line !== line) return;
-            if (isError || !result) return;
-
-            // Limit to one line, max 250 chars
-            let displayResult = result.split('\n')[0];
-            if (displayResult.length > 250) displayResult = displayResult.slice(0, 247) + '...';
-            // Don't show if result equals the input expression
-            if (displayResult === trimmedLine) return;
-            // Don't show 'undefined'
-            if (displayResult === 'undefined') return;
-
-            showInputPreview(r, displayResult);
-        }).catch(() => { });
-    }
 }
 
 sock.on('connect', () => {

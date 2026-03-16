@@ -42,7 +42,10 @@ function onEval({ id, type, content }) {
     let postError = false;
 
     try {
-        // Prevent previewing getters which might have side-effects
+        // --- Security Check for Previews ---
+        // If this is a preview (isReal=false), we check if the path being accessed 
+        // contains any getters on any level of the chain. This prevents executing 
+        // code inside a getter that might have side-effects or crash the worker.
         if (!isReal && code.match(/^([a-zA-Z0-9_$]+(?:\.[a-zA-Z0-9_$]+)*)$/)) {
             const parts = code.split('.');
             let current = replContext;
