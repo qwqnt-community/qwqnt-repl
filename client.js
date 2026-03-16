@@ -37,9 +37,8 @@ function sendRequest(type, content) {
 }
 
 function isRecoverableError(error) {
-    if (error && error.name === 'SyntaxError') {
+    if (error && error.name === 'SyntaxError')
         return /^(Unexpected end of input|Unexpected token)/.test(error.message);
-    }
     return false;
 }
 
@@ -172,9 +171,8 @@ function requestPreviews(r) {
 
         let commonPfx = filtered[0];
         for (let i = 1; i < filtered.length; i++) {
-            while (!filtered[i].startsWith(commonPfx)) {
+            while (!filtered[i].startsWith(commonPfx))
                 commonPfx = commonPfx.slice(0, -1);
-            }
             if (commonPfx.length === 0) break;
         }
 
@@ -211,8 +209,8 @@ sock.on('connect', () => {
         terminal: true,
         useColors: true,
         preview: false,  // disable built-in preview to prevent auto-apply on Enter
-        writer: (output) => output || '',
-        eval: (code, context, filename, callback) => {
+        writer: output => output || '',
+        eval: (code, _context, _filename, callback) => {
             let cleanCode = code.trim();
             if (!cleanCode) return callback(null, '');
 
@@ -286,11 +284,9 @@ sock.on('connect', () => {
         setImmediate(() => requestPreviews(r));
     };
 
-    if (historyPath) {
-        r.setupHistory(historyPath, (err) => {
-            if (err) console.error('[REPL] History failed:', err);
-        });
-    }
+    if (historyPath) r.setupHistory(historyPath, err => {
+        if (err) console.error('[REPL] History failed:', err);
+    });
 
     r.on('exit', () => {
         sock.destroy();

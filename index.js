@@ -11,115 +11,87 @@ const storagePath = resolve(qwqnt.framework.paths.data, name);
 mkdirSync(storagePath, { recursive: true });
 const historyPath = resolve(storagePath, 'history');
 
+const replContext = vm.createContext({
+    ...global,
+    qwqnt: global.qwqnt,
+    process: process,
+    console: console,
+    require: require,
+    module: module,
+    __filename: __filename,
+    __dirname: __dirname,
+});
+replContext.global = replContext;
+
+let worker;
 app.whenReady().then(() => {
-    // 为 REPL 创建一个专用且持久的执行上下文
-    const replContext = vm.createContext({
-        ...global,
-        qwqnt: global.qwqnt,
-        process: process,
-        console: console,
-        require: require,
-        module: module,
-        __filename: __filename,
-        __dirname: __dirname,
-    });
-
-    // 允许异步执行
-    replContext.global = replContext;
-
-    const worker = new Worker(resolve(__dirname, 'server.js'));
-
-    worker.on('message', async msg => {
-        const { id, type, content } = msg;
-
-        if (type === 'eval') {
-            const { isReal, code } = content;
-            if (isReal) console.log(`[REPL Exec] ${code}`);
-
-            try {
-                // 使用 vm 运行代码，确保作用域持久
-                const result = vm.runInContext(code, replContext);
-                let inspected;
-                if (isReal) {
-                    inspected = util.inspect(result, { colors: true, depth: 2 });
-                } else {
-                    // Preview mode: compact, no colors, single line
-                    inspected = util.inspect(result, {
-                        colors: false, depth: 1,
-                        breakLength: Infinity, compact: true
-                    }).split('\n')[0];
-                }
-                worker.postMessage({ id, type, content: inspected, isError: false });
-            } catch (e) {
-                if (isReal) {
-                    worker.postMessage({
-                        id, type,
-                        content: util.inspect(e, { colors: true }),
-                        isError: true
-                    });
-                } else {
-                    // Preview mode: suppress errors
-                    worker.postMessage({ id, type, content: '', isError: false });
-                }
-            }
-        } else if (type === 'complete') {
-            try {
-                // Find the word fragment at the cursor
-                const match = content.match(/([a-zA-Z0-9_$.]*)$/);
-                const fullPath = match ? match[0] : "";
-
-                let obj = vm.runInContext('this', replContext);
-                let prefix = "";
-                let objPath = "";
-
-                if (fullPath.endsWith('.')) {
-                    objPath = fullPath.slice(0, -1);
-                    prefix = "";
-                } else if (fullPath.includes('.')) {
-                    const parts = fullPath.split('.');
-                    prefix = parts.pop();
-                    objPath = parts.join('.');
-                } else {
-                    prefix = fullPath;
-                    objPath = "";
-                }
-
-                if (objPath) {
-                    try {
-                        obj = vm.runInContext(objPath, replContext);
-                    } catch {
-                        obj = null;
-                    }
-                }
-
-                if (obj !== null && obj !== undefined) {
-                    let keys = [];
-                    try {
-                        // 深入原型链获取所有属性（包括 Object.prototype）
-                        const allProps = new Set();
-                        let currentObj = obj;
-                        while (currentObj) {
-                            Object.getOwnPropertyNames(currentObj).forEach(k => allProps.add(k));
-                            try {
-                                Object.getOwnPropertySymbols(currentObj).forEach(() => { }); // skip symbols
-                            } catch { }
-                            currentObj = Object.getPrototypeOf(currentObj);
-                            // Don't break at Object.prototype — include its properties too
-                        }
-                        keys = Array.from(allProps).filter(k => k.startsWith(prefix));
-                    } catch (e) { }
-
-                    // Return the standard [completions, completed_string] format
-                    worker.postMessage({ id, type, content: [keys, prefix] });
-                } else {
-                    worker.postMessage({ id, type, content: [[], prefix] });
-                }
-            } catch (e) {
-                worker.postMessage({ id, type, content: [[], ""] });
-            }
-        }
+    worker = new Worker(resolve(__dirname, 'server.js'))
+    worker.on('message', msg => {
+        if (msg.type === 'eval') onEval(msg);
+        else if (msg.type === 'complete') onComplete(msg);
     });
 
     const command = `node '${resolve(__dirname, 'client.js')}'`;
     exec(`start powershell -Command "$env:REPL_HISTORY='${historyPath}'; ${command}"`, () => void 0);
 });
+
+function onEval({ id, type, content }) {
+    const { isReal, code } = content;
+    if (isReal) console.log(`[REPL EXEC] ${code}`);
+    let postContent = '';
+    let postError = false;
+
+    try {
+        const result = vm.runInContext(code, replContext);
+        let inspected = util.inspect(result, isReal
+            ? { colors: true, depth: 2 }
+            : { colors: false, depth: 1, breakLength: Infinity, compact: true });
+        if (!isReal) inspected = inspected.split('\n')[0];
+        postContent = inspected;
+    } catch (e) {
+        if (isReal) {
+            postContent = util.inspect(e, { colors: true });
+            postError = true;
+        }
+    }
+
+    worker.postMessage({ id, type, content: postContent, isError: postError });
+}
+
+function onComplete({ id, type, content }) {
+    try {
+        // Find the word fragment at the cursor
+        const fullPath = (content.match(/([a-zA-Z0-9_$.]*)$/) || [""])[0];
+
+        let obj = vm.runInContext('this', replContext);
+
+        const lastDot = fullPath.lastIndexOf('.');
+        const prefix = lastDot !== -1 ? fullPath.slice(lastDot + 1) : fullPath;
+        const objPath = lastDot !== -1 ? fullPath.slice(0, lastDot) : "";
+
+        if (objPath) {
+            try {
+                obj = vm.runInContext(objPath, replContext);
+            } catch {
+                obj = null;
+            }
+        }
+
+        let keys = [];
+        if (obj !== null && obj !== undefined) {
+            // Deeply traverse the prototype chain 
+            // to get all properties (including Object.prototype)
+            const allProps = new Set();
+            let currentObj = obj;
+            while (currentObj) {
+                Object.getOwnPropertyNames(currentObj).forEach(k => allProps.add(k));
+                currentObj = Object.getPrototypeOf(currentObj);
+            }
+            keys = Array.from(allProps).filter(k => k.startsWith(prefix));
+        }
+        // Return the standard [completions, completed_string] format
+        worker.postMessage({ id, type, content: [keys, prefix] });
+    } catch (e) {
+        worker.postMessage({ id, type, content: [[], ""] });
+    }
+}
