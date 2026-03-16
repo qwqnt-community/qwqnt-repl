@@ -42,6 +42,33 @@ function onEval({ id, type, content }) {
     let postError = false;
 
     try {
+        // Prevent previewing getters which might have side-effects
+        if (!isReal && code.match(/^([a-zA-Z0-9_$]+(?:\.[a-zA-Z0-9_$]+)*)$/)) {
+            const parts = code.split('.');
+            let current = replContext;
+            for (let i = 0; i < parts.length; i++) {
+                const part = parts[i];
+                let target = current;
+                let isGetter = false;
+                while (target) {
+                    const desc = Object.getOwnPropertyDescriptor(target, part);
+                    if (desc) {
+                        if (desc.get) isGetter = true;
+                        break;
+                    }
+                    target = Object.getPrototypeOf(target);
+                }
+                if (isGetter) {
+                    return worker.postMessage({ id, type, content: '', isError: false });
+                }
+                current = current[part];
+                if (current == null) {
+                    if (i < parts.length - 1) break;
+                    else break; // or handle as undefined result
+                }
+            }
+        }
+
         const result = vm.runInContext(code, replContext);
         let inspected = util.inspect(result, isReal
             ? { colors: true, depth: 2 }

@@ -58,6 +58,7 @@ function isSafeForPreview(code) {
     if (/(?<![=!<>])=(?![=>])/.test(code)) return false;
     if (/\bdelete\b/.test(code)) return false;
     if (/\+\+|--/.test(code)) return false;
+    if (/[()\[\]]/.test(code)) return false;
     return true;
 }
 
@@ -164,21 +165,15 @@ function requestPreviews(r) {
     sendRequest('complete', line).then(({ content }) => {
         if (gen !== previewGeneration || r.line !== line) return;
         const [completions, completeOn] = content;
-        if (!completions || completions.length === 0) return;
+        if (!completions || completions.length === 0 || !completeOn) return;
 
         const filtered = completions.filter(Boolean);
-        if (filtered.length === 0) return;
-
-        let commonPfx = filtered[0];
-        for (let i = 1; i < filtered.length; i++) {
-            while (!filtered[i].startsWith(commonPfx))
-                commonPfx = commonPfx.slice(0, -1);
-            if (commonPfx.length === 0) break;
-        }
-
-        if (commonPfx.length > completeOn.length) {
-            const suffix = commonPfx.slice(completeOn.length);
-            showCompletionPreview(r, suffix);
+        if (filtered.length > 0) {
+            const firstSuggestion = filtered[0];
+            if (firstSuggestion.length > completeOn.length) {
+                const suffix = firstSuggestion.slice(completeOn.length);
+                showCompletionPreview(r, suffix);
+            }
         }
     }).catch(() => { });
 
